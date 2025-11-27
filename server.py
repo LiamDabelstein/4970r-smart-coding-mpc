@@ -6,72 +6,46 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Configuration ---
-# We use the Client ID to identify the app to GitHub.
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 MCP_SERVER_NAME = "Smart Coding MCP"
 
 mcp = FastMCP(MCP_SERVER_NAME)
 
-# --- Helper: Get Token from Context or Env ---
-def get_token(ctx: Context = None) -> str:
-    """
-    Retrieves the GitHub token. It prioritizes the token stored in the 
-    MCP Client configuration (Environment Variable).
-    """
-    # 1. Check for token in the environment (The "Saved in Settings" way)
-    # FastMCP automatically injects client-provided env vars into the server process.
-    token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
-    
-    if token and token.startswith("ghu"):
-        return token
-        
-    # 2. If not found, instruct the user to configure it
-    raise ValueError(
-        "❌ Missing GitHub Token.\n"
-        "Please run the 'authenticate_github' tool to generate a token,\n"
-        "then add 'GITHUB_PERSONAL_ACCESS_TOKEN' to your MCP Client configuration."
-    )
+# --- Helper: Validation ---
+def validate_token(token: str) -> str:
+    if not token or not token.startswith("ghu"):
+        raise ValueError("❌ Invalid Token. Please run 'authenticate_github' first.")
+    return token
 
-# --- Tool 1: The Login Portal ---
+# --- Tool 1: Login ---
 @mcp.tool()
 async def authenticate_github(ctx: Context) -> str:
     """
-    Start the login process to generate a new User Access Token.
-    Returns the token for you to save in your settings.
+    Start login process. Returns the token.
+    User should save this token in their System Prompt or Rules.
     """
     async with httpx.AsyncClient() as client:
-        # 1. Request Device Code from GitHub
+        # 1. Request Code
         resp = await client.post(
             "https://github.com/login/device/code",
             data={"client_id": GITHUB_CLIENT_ID, "scope": "repo,read:org"},
             headers={"Accept": "application/json"}
         )
-        
-        if resp.status_code != 200:
-            return f"Error contacting GitHub: {resp.text}"
-
         data = resp.json()
-        device_code = data["device_code"]
-        user_code = data["user_code"]
-        uri = data["verification_uri"]
-        interval = data["interval"]
-
-        # 2. Tell User to Go Click (and wait)
-        # We use ctx.info to send a progress update to the user immediately
-        ctx.info(f"Action Required: Please visit {uri} and enter code: {user_code}")
         
-        # 3. Poll for Success
-        # We poll for up to 5 minutes (300s) to give them time to click
+        # 2. Tell User to Click
+        ctx.info(f"Visit {data['verification_uri']} and enter: {data['user_code']}")
+        
+        # 3. Poll
         start_time = asyncio.get_event_loop().time()
         while (asyncio.get_event_loop().time() - start_time) < 300:
-            await asyncio.sleep(interval + 2)
+            await asyncio.sleep(data["interval"] + 2)
             
             poll_resp = await client.post(
                 "https://github.com/login/oauth/access_token",
                 data={
                     "client_id": GITHUB_CLIENT_ID,
-                    "device_code": device_code,
+                    "device_code": data["device_code"],
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code"
                 },
                 headers={"Accept": "application/json"}
@@ -81,32 +55,23 @@ async def authenticate_github(ctx: Context) -> str:
             if "access_token" in poll_data:
                 token = poll_data["access_token"]
                 return (
-                    f"✅ SUCCESS!\n\n"
-                    f"Your Token: {token}\n\n"
-                    "👉 NEXT STEP: Go to your MCP Client Settings (Cursor/Claude),\n"
-                    "edit this server's configuration, and add this Environment Variable:\n\n"
-                    f"GITHUB_PERSONAL_ACCESS_TOKEN={token}\n\n"
-                    "After saving, restart the client to apply the changes."
+                    f"✅ SUCCESS! Token: {token}\n\n"
+                    "👉 INSTRUCTION: Add this to your System Prompt / Project Rules:\n"
+                    f"'My GitHub Token is {token}. Use this for all Smart Coding tools.'"
                 )
-            
-            if poll_data.get("error") == "expired_token":
-                return "❌ The login code expired. Please run this tool again."
+    return "❌ Timed out."
 
-    return "❌ Timed out waiting for authentication."
-
-# --- Tool 2: Example Protected Tool ---
+# --- Tool 2: Protected Tool ---
 @mcp.tool()
-async def list_my_repos(ctx: Context) -> str:
+async def list_my_repos(github_token: str) -> str:
     """
-    Lists your private repositories.
-    Requires GITHUB_PERSONAL_ACCESS_TOKEN to be set in your configuration.
+    Lists private repos. 
+    You must provide the 'github_token' argument.
     """
-    try:
-        # Get token from the environment (stateless!)
-        token = get_token(ctx)
-    except ValueError as e:
-        return str(e)
+    # 1. Use the token passed by the LLM
+    token = validate_token(github_token)
 
+    # 2. Call GitHub
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "https://api.github.com/user/repos?sort=updated&per_page=5",
@@ -118,11 +83,8 @@ async def list_my_repos(ctx: Context) -> str:
         
         if response.status_code == 200:
             repos = response.json()
-            return "Your Recent Repos:\n" + "\n".join([r["full_name"] for r in repos])
-        elif response.status_code == 401:
-            return "❌ GitHub rejected your token. It may be invalid or expired."
-        else:
-            return f"Error from GitHub: {response.status_code}"
+            return "Repos:\n" + "\n".join([r["full_name"] for r in repos])
+        return f"Error: {response.status_code}"
 
 if __name__ == "__main__":
     mcp.run()
