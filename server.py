@@ -1,6 +1,7 @@
 import os
 import httpx
 import asyncio
+from typing import Annotated
 from fastmcp import FastMCP, Context
 from fastmcp.exceptions import ToolError
 from dotenv import load_dotenv
@@ -8,6 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Configuration ---
+# We use the Client ID to identify the app to GitHub.
+# The Client Secret is NOT needed for Device Flow.
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 MCP_SERVER_NAME = "Smart Coding MCP"
 
@@ -40,7 +43,8 @@ def validate_header_token(ctx: Context) -> str:
     except Exception:
         raise ToolError(
             "🔒 Authentication Required.\n"
-            "Please ask the AI to 'Log me in to GitHub' to start the process."
+            "Please run the 'initiate_login' tool first to start the process.\n"
+            "Then add the resulting token to your configuration."
         )
 
 # --- Tool 1: Step 1 - Start Login (Non-Blocking) ---
@@ -106,8 +110,8 @@ async def verify_login(device_code: str) -> str:
                     "👉 CONFIGURATION STEP:\n"
                     "1. Copy this token.\n"
                     "2. Open your Claude Desktop config file.\n"
-                    "3. Add/Update the 'env' section for 'smart-coding':\n"
-                    f'   "env": {{ "GITHUB_PERSONAL_ACCESS_TOKEN": "{token}" }}\n'
+                    "3. Update the 'smart-coding' args to include:\n"
+                    f'   "--header", "User-Access-Token:{token}"\n'
                     "4. Restart Claude."
                 )
             
@@ -126,8 +130,10 @@ async def list_my_repos(ctx: Context) -> str:
     Lists your private repositories. 
     Authentication is handled automatically via headers.
     """
+    # 1. Validate the token from the header
     token = validate_header_token(ctx)
 
+    # 2. Use the token to fetch data
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "https://api.github.com/user/repos?sort=updated&per_page=5",
