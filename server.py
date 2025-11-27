@@ -56,7 +56,8 @@ async def initiate_login() -> str:
     Starts the GitHub login process.
     
     IMPORTANT: Do NOT call this tool unless 'list_my_repos' has failed 
-    with an Authentication Error.
+    with an Authentication Error or the user explicitly asks to login
+    to their github account.
     """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
