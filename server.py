@@ -33,6 +33,8 @@ def validate_header_token(ctx: Context) -> str:
             token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
 
         if not token:
+            # We explicitly raise a helpful error that the LLM can see
+            # This triggers the fallback to login ONLY if the header is missing
             raise ValueError("Missing Token")
             
         if not token.startswith("ghu"):
@@ -42,18 +44,19 @@ def validate_header_token(ctx: Context) -> str:
         
     except Exception:
         raise ToolError(
-            "🔒 Authentication Required.\n"
-            "Please run the 'initiate_login' tool first to start the process.\n"
-            "Then add the resulting token to your configuration."
+            "🔒 Authentication Failed.\n"
+            "The tool attempted to access GitHub but no valid token was found header.\n"
+            "Please RUN the 'initiate_login' tool now to fix this."
         )
 
 # --- Tool 1: Step 1 - Start Login (Non-Blocking) ---
 @mcp.tool()
 async def initiate_login() -> str:
     """
-    STEP 1: Call this to start the GitHub login process.
-    It returns a URL and Code for the user, and a 'device_code' 
-    that must be passed to the 'verify_login' tool.
+    Starts the GitHub login process.
+    
+    IMPORTANT: Do NOT call this tool unless 'list_my_repos' has failed 
+    with an Authentication Error.
     """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -84,8 +87,7 @@ async def initiate_login() -> str:
 @mcp.tool()
 async def verify_login(device_code: str) -> str:
     """
-    STEP 2: Call this AFTER the user has entered the code on GitHub.
-    It polls GitHub until the login is complete and returns the Access Token.
+    Completes the login process. Call this AFTER the user clicks the link.
     """
     async with httpx.AsyncClient() as client:
         # We poll for up to 2 minutes (120s)
@@ -127,8 +129,11 @@ async def verify_login(device_code: str) -> str:
 @mcp.tool()
 async def list_my_repos(ctx: Context) -> str:
     """
-    Lists your private repositories. 
-    Authentication is handled automatically via headers.
+    Lists your private repositories.
+    
+    IMPORTANT: Always try this tool FIRST. 
+    Authentication is handled automatically via headers. 
+    You do not need to call initiate_login unless this tool returns an error.
     """
     # 1. Validate the token from the header
     token = validate_header_token(ctx)
