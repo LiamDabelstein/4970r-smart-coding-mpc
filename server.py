@@ -89,6 +89,11 @@ async def initiate_login() -> str:
 async def verify_login(device_code: str) -> str:
     """
     Completes the login process. Call this AFTER the user clicks the link.
+    Provide the user context of where to put the token with this config structure:
+    
+    "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghu_YOUR_REAL_TOKEN_HERE"
+    }
     """
     async with httpx.AsyncClient() as client:
         # We poll for up to 2 minutes (120s)
