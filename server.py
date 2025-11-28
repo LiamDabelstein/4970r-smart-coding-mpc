@@ -29,8 +29,9 @@ def validate_header_token(ctx: Context) -> str:
         if not token:
             raise ValueError("Missing 'User-Access-Token' header.")
             
-        if not token.startswith("ghu"):  # Verify GitHub user token prefix
-             raise ValueError("Invalid Token Format (must start with 'ghu')")
+        # FIX: Allow 'gho' (OAuth), 'ghp' (Personal), and 'ghu' (User) prefixes
+        if not token.startswith(("ghu", "gho", "ghp")):
+             raise ValueError("Invalid Token Format (must start with 'ghu', 'gho', or 'ghp')")
              
         return token
         
@@ -49,7 +50,7 @@ async def initiate_login() -> str:
      
     IMPORTANT: Do NOT call this tool unless any other tools have failed 
     with an authentication error OR the user explicitly asks to login 
-    to their GitGub account.
+    to their GitHub account.
     """
     async with httpx.AsyncClient() as client:
         # Request device code from GitHub
@@ -69,7 +70,7 @@ async def initiate_login() -> str:
         uri = data["verification_uri"]
         interval = data.get("interval", 5)  # Polling interval
 
-        # Provide information to LLM
+        # Return information
         return (
             f"ACTION REQUIRED:\n"
             f"1. Click this link: {uri}\n"
@@ -85,9 +86,9 @@ async def verify_login(device_code: str) -> str:
     Completes the login process. Call this AFTER the user clicks the link.
     """
     async with httpx.AsyncClient() as client:
-        # We poll for the user login for up to 1 minute
-        start_time = asyncio.get_event_loop().time()
-        while (asyncio.get_event_loop().time() - start_time) < 60:
+        # FIX: Use get_running_loop() and increase timeout to 120s
+        start_time = asyncio.get_running_loop().time()
+        while (asyncio.get_running_loop().time() - start_time) < 120:
             # Check authorization status
             poll_resp = await client.post(
                 "https://github.com/login/oauth/access_token",
@@ -149,4 +150,4 @@ async def list_my_repos(ctx: Context) -> str:
 
 # --- Start the MCP server ---
 if __name__ == "__main__":
-    mcp.run()  
+    mcp.run()
