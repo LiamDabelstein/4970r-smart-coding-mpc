@@ -12,7 +12,8 @@ load_dotenv()  # Initialize environment variables
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 MCP_SERVER_NAME = "Smart Coding MCP"
 
-mcp = FastMCP(MCP_SERVER_NAME)  # Initialize server instance
+# Initialize server instance
+mcp = FastMCP(MCP_SERVER_NAME)  
 
 # --- Helper: Token Validation ---
 def validate_header_token(ctx: Context) -> str:
@@ -23,13 +24,13 @@ def validate_header_token(ctx: Context) -> str:
         request = ctx.request_context.request  # Access raw request object
         headers = request.headers  # Get headers dictionary
         
-        # Check for our custom header (case-insensitive)
+        # Check for the custom header (case-insensitive)
         token = headers.get("user-access-token", "")
         
         if not token:
             raise ValueError("Missing 'User-Access-Token' header.")
             
-        # FIX: Allow 'gho' (OAuth), 'ghp' (Personal), and 'ghu' (User) prefixes
+        # Allow 'gho' (OAuth), 'ghp' (Personal), and 'ghu' (User) prefixes
         if not token.startswith(("ghu", "gho", "ghp")):
              raise ValueError("Invalid Token Format (must start with 'ghu', 'gho', or 'ghp')")
              
@@ -86,9 +87,10 @@ async def verify_login(device_code: str) -> str:
     Completes the login process. Call this AFTER the user clicks the link.
     """
     async with httpx.AsyncClient() as client:
-        # FIX: Use get_running_loop() and increase timeout to 120s
+        # Use get_running_loop() and with timeout of 120s
         start_time = asyncio.get_running_loop().time()
         while (asyncio.get_running_loop().time() - start_time) < 120:
+            
             # Check authorization status
             poll_resp = await client.post(
                 "https://github.com/login/oauth/access_token",
