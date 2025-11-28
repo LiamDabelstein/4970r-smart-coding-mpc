@@ -110,7 +110,9 @@ async def verify_login(device_code: str) -> str:
                     "1. Copy this token.\n"
                     "2. Open your Claude Desktop config file.\n"
                     "3. Add the token to the 'env' section for 'smart-coding':\n"
-                    f'   "env": {{ "GITHUB_PERSONAL_ACCESS_TOKEN": "{token}" }}\n'
+                    f'   "env": {{\n'
+                    f'     "GITHUB_PERSONAL_ACCESS_TOKEN": "{token}"\n'
+                    f'   }}\n'
                     "4. Restart Claude."
                 )
             
