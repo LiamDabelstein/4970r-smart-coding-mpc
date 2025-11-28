@@ -1,20 +1,18 @@
-import os
-import httpx
-import asyncio
-from typing import Annotated
-from fastmcp import FastMCP, Context
-from fastmcp.exceptions import ToolError
-from dotenv import load_dotenv
+import os  # System interface for environment variables
+import httpx  # Async HTTP client for API requests
+import asyncio  # Asynchronous I/O and time management
+from fastmcp import FastMCP, Context  # Core MCP server framework
+from fastmcp.exceptions import ToolError  # MCP specific error handling
+from dotenv import load_dotenv  # Load environment variables from .env file
 
-load_dotenv()
+load_dotenv()  # Initialize environment variables
 
 # --- Configuration ---
 # We use the Client ID to identify the app to GitHub.
-# The Client Secret is NOT needed for Device Flow.
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 MCP_SERVER_NAME = "Smart Coding MCP"
 
-mcp = FastMCP(MCP_SERVER_NAME)
+mcp = FastMCP(MCP_SERVER_NAME)  # Initialize server instance
 
 # --- Helper: Token Validation ---
 def validate_header_token(ctx: Context) -> str:
@@ -22,23 +20,17 @@ def validate_header_token(ctx: Context) -> str:
     Extracts the token from the custom header 'User-Access-Token'.
     """
     try:
-        request = ctx.request_context.request
-        headers = request.headers
+        request = ctx.request_context.request  # Access raw request object
+        headers = request.headers  # Get headers dictionary
         
         # Check for our custom header (case-insensitive)
         token = headers.get("user-access-token", "")
         
-        # Also check env var for local testing fallback
         if not token:
-            token = os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN", "")
-
-        if not token:
-            # We explicitly raise a helpful error that the LLM can see
-            # This triggers the fallback to login ONLY if the header is missing
-            raise ValueError("Missing Token")
+            raise ValueError("Missing 'User-Access-Token' header.")
             
-        if not token.startswith("ghu"):
-             raise ValueError("Invalid Token Format")
+        if not token.startswith("ghu"):  # Verify GitHub user token prefix
+             raise ValueError("Invalid Token Format (must start with 'ghu')")
              
         return token
         
@@ -54,12 +46,13 @@ def validate_header_token(ctx: Context) -> str:
 async def initiate_login() -> str:
     """
     Starts the GitHub login process.
-    
-    IMPORTANT: Do NOT call this tool unless any other github api tool has 
-    failed with an Authentication Error OR the user explicitly asks to login
-    to their github account.
+     
+    IMPORTANT: Do NOT call this tool unless any other tools have failed 
+    with an authentication error OR the user explicitly asks to login 
+    to their GitGub account.
     """
     async with httpx.AsyncClient() as client:
+        # Request device code from GitHub
         resp = await client.post(
             "https://github.com/login/device/code",
             data={"client_id": GITHUB_CLIENT_ID, "scope": "repo,read:org"},
@@ -70,12 +63,13 @@ async def initiate_login() -> str:
         if resp.status_code != 200:
             return f"Error connecting to GitHub: {resp.text}"
 
+        # Parse the response from GitHub
         device_code = data["device_code"]
         user_code = data["user_code"]
         uri = data["verification_uri"]
-        interval = data.get("interval", 5)
+        interval = data.get("interval", 5)  # Polling interval
 
-        # We return the instructions immediately so the user sees them.
+        # Provide information to LLM
         return (
             f"ACTION REQUIRED:\n"
             f"1. Click this link: {uri}\n"
@@ -89,18 +83,12 @@ async def initiate_login() -> str:
 async def verify_login(device_code: str) -> str:
     """
     Completes the login process. Call this AFTER the user clicks the link.
-
-    IMPORTANT: Provide the user context of where to put their access token 
-    with this config structure for the Remote MCP Server:
-    "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghu_YOUR_REAL_TOKEN_HERE"
-    }
     """
     async with httpx.AsyncClient() as client:
-        # We poll for up to 2 minutes (120s)
+        # We poll for the user login for up to 1 minute
         start_time = asyncio.get_event_loop().time()
-        while (asyncio.get_event_loop().time() - start_time) < 120:
-            # Poll GitHub
+        while (asyncio.get_event_loop().time() - start_time) < 60:
+            # Check authorization status
             poll_resp = await client.post(
                 "https://github.com/login/oauth/access_token",
                 data={
@@ -112,23 +100,24 @@ async def verify_login(device_code: str) -> str:
             )
             poll_data = poll_resp.json()
             
+            # Success, capture and return token
             if "access_token" in poll_data:
-                token = poll_data["access_token"]
+                token = poll_data["access_token"]  
                 return (
                     f"✅ SUCCESS! Token: {token}\n\n"
                     "👉 CONFIGURATION STEP:\n"
                     "1. Copy this token.\n"
                     "2. Open your Claude Desktop config file.\n"
-                    "3. Update the 'smart-coding' args to include:\n"
-                    f'   "--header", "User-Access-Token:{token}"\n'
+                    "3. Add the token to the 'env' section for 'smart-coding':\n"
+                    f'   "env": {{ "GITHUB_PERSONAL_ACCESS_TOKEN": "{token}" }}\n'
                     "4. Restart Claude."
                 )
             
+            # Failure from timeout
             if poll_data.get("error") == "expired_token":
                 return "❌ The login code expired. Please start over with 'initiate_login'."
             
-            # Wait 5 seconds before checking again
-            await asyncio.sleep(5)
+            await asyncio.sleep(5)  # Wait before next poll
             
     return "❌ Timeout: User did not authorize in time. Please try again."
 
@@ -136,8 +125,8 @@ async def verify_login(device_code: str) -> str:
 @mcp.tool()
 async def list_my_repos(ctx: Context) -> str:
     """
-    Lists your private repositories.
-    
+    Lists your private GitHub repositories.
+     
     IMPORTANT: Always try this tool FIRST. 
     Authentication is handled automatically via headers. 
     You do not need to call initiate_login unless this tool returns an error.
@@ -153,10 +142,11 @@ async def list_my_repos(ctx: Context) -> str:
         )
         if response.status_code == 200:
             repos = response.json()
-            names = [r["full_name"] for r in repos]
+            names = [r["full_name"] for r in repos]  # Extract repo names
             return "Your Recent Repos:\n" + "\n".join(names)
         
         return f"GitHub Error: {response.status_code}"
 
+# --- Start the MCP server ---
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run()  
