@@ -85,12 +85,15 @@ async def initiate_login() -> str:
 async def verify_login(device_code: str) -> str:
     """
     Completes the login process. Call this AFTER the user clicks the link.
+
+    IMPORTANT: Tell the user where to put the personal access token when
+    the login is successful.
     """
     async with httpx.AsyncClient() as client:
         # Use get_running_loop() and with timeout of 120s
         start_time = asyncio.get_running_loop().time()
         while (asyncio.get_running_loop().time() - start_time) < 120:
-            
+
             # Check authorization status
             poll_resp = await client.post(
                 "https://github.com/login/oauth/access_token",
