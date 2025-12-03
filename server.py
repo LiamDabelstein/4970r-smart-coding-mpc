@@ -32,6 +32,7 @@ def validate_header_token(ctx: Context) -> str:
             raise ValueError("Missing 'User-Access-Token' header.")
             
         # Allow 'gho' (OAuth), 'ghp' (Personal), and 'ghu' (User) prefixes
+        # This ensures we don't pass malformed strings to the GitHub API
         if not token.startswith(("ghu", "gho", "ghp")):
              raise ValueError("Invalid Token Format (must start with 'ghu', 'gho', or 'ghp')")
              
@@ -49,7 +50,7 @@ def validate_header_token(ctx: Context) -> str:
 # Tools 1 & 2: Handle the OAuth Device Flow to get a token.
 # ==============================================================================
 
-# --- Tool 1: Step 1 - Start Login (Non-Blocking) ---
+# --- Start Login (Non-Blocking) ---
 @mcp.tool()
 async def initiate_login() -> str:
     """
@@ -61,6 +62,7 @@ async def initiate_login() -> str:
     """
     async with httpx.AsyncClient() as client:
         # Request device code from GitHub
+        # This initiates the OAuth Device Flow
         resp = await client.post(
             "https://github.com/login/device/code",
             data={"client_id": GITHUB_CLIENT_ID, "scope": "repo,read:org"},
@@ -71,13 +73,13 @@ async def initiate_login() -> str:
         if resp.status_code != 200:
             return f"Error connecting to GitHub: {resp.text}"
 
-        # Parse the response from GitHub
+        # Parse the response to get user verification codes
         device_code = data["device_code"]
         user_code = data["user_code"]
         uri = data["verification_uri"]
-        interval = data.get("interval", 5)  # Polling interval
+        interval = data.get("interval", 5)  # Polling interval recommended by GitHub
 
-        # Return information
+        # Return instructions to the LLM to display to the user
         return (
             f"ACTION REQUIRED:\n"
             f"1. Click this link: {uri}\n"
@@ -86,7 +88,7 @@ async def initiate_login() -> str:
             f"with this device_code: {device_code}"
         )
 
-# --- Tool 2: Step 2 - Finish Login (Blocking) ---
+# --- Finish Login (Blocking) ---
 @mcp.tool()
 async def verify_login(device_code: str) -> str:
     """
@@ -96,11 +98,11 @@ async def verify_login(device_code: str) -> str:
     the login is successful.
     """
     async with httpx.AsyncClient() as client:
-        # Use get_running_loop() and with timeout of 120s
+        # Use get_running_loop() and with timeout of 120s to prevent hanging
         start_time = asyncio.get_running_loop().time()
         while (asyncio.get_running_loop().time() - start_time) < 120:
 
-            # Check authorization status
+            # Check authorization status with GitHub
             poll_resp = await client.post(
                 "https://github.com/login/oauth/access_token",
                 data={
@@ -112,7 +114,7 @@ async def verify_login(device_code: str) -> str:
             )
             poll_data = poll_resp.json()
             
-            # Success, capture and return token
+            # If the response contains 'access_token', the user has authorized
             if "access_token" in poll_data:
                 token = poll_data["access_token"]  
                 return (
@@ -127,11 +129,11 @@ async def verify_login(device_code: str) -> str:
                     "4. Restart Claude."
                 )
             
-            # Failure from timeout
+            # Handle explicit expiration error
             if poll_data.get("error") == "expired_token":
                 return "❌ The login code expired. Please start over with 'initiate_login'."
             
-            await asyncio.sleep(5)  # Wait before next poll
+            await asyncio.sleep(5)  # Wait 5 seconds before next poll
             
     return "❌ Timeout: User did not authorize in time. Please try again."
 
@@ -146,12 +148,11 @@ async def get_repository_map(ctx: Context, owner: str, repo: str, branch: str = 
     Step 1: Retrieves the entire file structure of the repository.
     API Call: GET /git/trees/{branch}?recursive=1
 
-    IMPORTANT: When the user asks to document one file of source code within
+    IMPORTANT: When the user asks to document a file of source code within
     a project or github repository, get_repository_map represents the first 
-    tool in the cronilogical order of operations. To get the most context 
-    and provide the best documentation for the source code file, follow steps 
-    1-7 to fully complete the task as requested by the user. See the description
-    of each tool to gather the step order.
+    tool in the cronilogical order of operations. To provide the best results
+    and get the most context about the source code for documentation, follow 
+    tools that have steps 1-7 to fully complete the task.
     """
     token = validate_header_token(ctx)
     async with httpx.AsyncClient() as client:
@@ -172,7 +173,7 @@ async def get_repository_map(ctx: Context, owner: str, repo: str, branch: str = 
         # Filter to only show files (blobs), ignore folders to save tokens
         files = [item["path"] for item in data.get("tree", []) if item["type"] == "blob"]
         
-        # Return top 200 files to prevent context overflow
+        # Return top 200 files to prevent context overflow in the LLM
         return f"🗺️ Repository Map for {owner}/{repo}:\n\n" + "\n".join(files[:200])
 
 @mcp.tool()
@@ -180,24 +181,31 @@ async def get_project_overview(ctx: Context, owner: str, repo: str) -> str:
     """
     Step 2: Synthesizes the tech stack, languages, and README.
     API Calls: GET /languages, GET /dependency-graph/sbom, GET /readme
+
+    IMPORTANT: When the user asks to document a file of source code within
+    a project or github repository, get_repository_map represents the first 
+    tool in the cronilogical order of operations. To provide the best results
+    and get the most context about the source code for documentation, follow 
+    tools that have steps 1-7 to fully complete the task.
     """
     token = validate_header_token(ctx)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
     
     async with httpx.AsyncClient() as client:
-        # Run 3 inexpensive requests in parallel
+        # Run 3 inexpensive requests in parallel to reduce latency
         tasks = [
             client.get(f"https://api.github.com/repos/{owner}/{repo}/languages", headers=headers),
             client.get(f"https://api.github.com/repos/{owner}/{repo}/dependency-graph/sbom", headers=headers),
             client.get(f"https://api.github.com/repos/{owner}/{repo}/readme", headers=headers)
         ]
         
+        # Wait for all requests to complete
         langs_resp, sbom_resp, readme_resp = await asyncio.gather(*tasks)
         
-        # 1. Process Languages
+        # Process Languages (Keys are language names, values are byte counts)
         languages = list(langs_resp.json().keys()) if langs_resp.status_code == 200 else ["Unknown"]
         
-        # 2. Process SBOM (Libraries)
+        # Process SBOM (Software Bill of Materials / Libraries)
         stack = []
         if sbom_resp.status_code == 200:
             data = sbom_resp.json()
@@ -206,12 +214,12 @@ async def get_project_overview(ctx: Context, owner: str, repo: str) -> str:
         else:
             stack = ["(Dependency Graph disabled for this repo)"]
 
-        # 3. Process README (Snippet)
+        # Process README (Snippet) - Requires Base64 decoding
         readme_snippet = "No README found."
         if readme_resp.status_code == 200:
             try:
                 content = base64.b64decode(readme_resp.json()["content"]).decode("utf-8")
-                readme_snippet = content[:500] + "..." # First 500 chars only
+                readme_snippet = content[:500] + "..." # Truncate to first 500 chars
             except:
                 readme_snippet = "Error decoding README."
 
@@ -233,21 +241,27 @@ async def inspect_target_file(ctx: Context, owner: str, repo: str, path: str) ->
     """
     Step 3: Deep analysis of the file you want to document.
     API Calls: GET /contents, GET /commits, GET /commits/{sha}/pulls
+
+    IMPORTANT: When the user asks to document a file of source code within
+    a project or github repository, get_repository_map represents the first 
+    tool in the cronilogical order of operations. To provide the best results
+    and get the most context about the source code for documentation, follow 
+    tools that have steps 1-7 to fully complete the task.
     """
     token = validate_header_token(ctx)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
     
     async with httpx.AsyncClient() as client:
-        # A. Get Content
+        # Get Content
         content_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/contents/{path}", headers=headers)
         if content_resp.status_code != 200:
             return f"❌ File not found: {path}"
         
         file_data = content_resp.json()
         content = base64.b64decode(file_data["content"]).decode("utf-8")
-        current_sha = file_data["sha"]
+        current_sha = file_data["sha"] # SHA needed later for updates
 
-        # B. Get Commit History (Last 3)
+        # Get Commit History (Last 3) to understand recent changes
         history_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/commits?path={path}&per_page=3", headers=headers)
         commits = history_resp.json() if history_resp.status_code == 200 else []
         
@@ -260,10 +274,10 @@ async def inspect_target_file(ctx: Context, owner: str, repo: str, path: str) ->
             author = c["commit"]["author"]["name"]
             history_text += f"- {author}: {msg}\n"
 
-        # C. Get Intent (PR) associated with the LATEST change
+        # Get Intent (PR) associated with the LATEST change
         pr_context = "No associated PR found."
         if latest_commit_sha:
-            # Special endpoint to link commit -> PR
+            # Special endpoint to link commit -> PR to understand business logic
             pr_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/commits/{latest_commit_sha}/pulls", headers=headers)
             if pr_resp.status_code == 200 and pr_resp.json():
                 pr = pr_resp.json()[0]
@@ -284,9 +298,16 @@ async def read_references(ctx: Context, owner: str, repo: str, paths: list[str])
     """
     Step 4: Reads dependencies/imports found in the target file.
     API Calls: Multiple GET /contents calls in parallel.
+
+    IMPORTANT: When the user asks to document a file of source code within
+    a project or github repository, get_repository_map represents the first 
+    tool in the cronilogical order of operations. To provide the best results
+    and get the most context about the source code for documentation, follow 
+    tools that have steps 1-7 to fully complete the task.
     """
     token = validate_header_token(ctx)
     
+    # Inner helper to fetch individual file content safely
     async def fetch_one(client, path):
         resp = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
@@ -301,6 +322,7 @@ async def read_references(ctx: Context, owner: str, repo: str, paths: list[str])
         return f"--- ERROR: Could not find {path} ---\n"
 
     async with httpx.AsyncClient() as client:
+        # Create tasks for every path requested
         tasks = [fetch_one(client, p) for p in paths]
         results = await asyncio.gather(*tasks)
     
@@ -316,6 +338,12 @@ async def initialize_workspace(ctx: Context, owner: str, repo: str, base_branch:
     """
     Step 5: Creates a new branch for the documentation work.
     API Calls: GET /git/ref/heads/{base}, POST /git/refs
+
+    IMPORTANT: When the user asks to document a file of source code within
+    a project or github repository, get_repository_map represents the first 
+    tool in the cronilogical order of operations. To provide the best results
+    and get the most context about the source code for documentation, follow 
+    tools that have steps 1-7 to fully complete the task.
     """
     token = validate_header_token(ctx)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
@@ -325,14 +353,14 @@ async def initialize_workspace(ctx: Context, owner: str, repo: str, base_branch:
     new_branch = f"docs/update-{int(time.time())}"
     
     async with httpx.AsyncClient() as client:
-        # 1. Get SHA of base branch
+        # Get SHA of base branch to know where to start from
         ref_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{base_branch}", headers=headers)
         if ref_resp.status_code != 200:
             return f"❌ Base branch '{base_branch}' not found."
         
         base_sha = ref_resp.json()["object"]["sha"]
         
-        # 2. Create new branch
+        # Create new branch pointing to that SHA
         create_resp = await client.post(
             f"https://api.github.com/repos/{owner}/{repo}/git/refs",
             json={"ref": f"refs/heads/{new_branch}", "sha": base_sha},
@@ -348,17 +376,25 @@ async def commit_file_update(ctx: Context, owner: str, repo: str, branch: str, p
     """
     Step 6: Writes the documented code to the file.
     API Call: PUT /contents/{path}
+
+    IMPORTANT: When the user asks to document a file of source code within
+    a project or github repository, get_repository_map represents the first 
+    tool in the cronilogical order of operations. To provide the best results
+    and get the most context about the source code for documentation, follow 
+    tools that have steps 1-7 to fully complete the task.
     """
     token = validate_header_token(ctx)
+    # GitHub API requires content to be Base64 encoded
     encoded = base64.b64encode(new_content.encode("utf-8")).decode("utf-8")
     
     payload = {
         "message": message,
         "content": encoded,
         "branch": branch,
-        "sha": original_sha  # Critical for concurrency safety
+        "sha": original_sha  # Critical for concurrency safety (rejects if file changed elsewhere)
     }
     
+    # Submits the commit on the branch
     async with httpx.AsyncClient() as client:
         resp = await client.put(
             f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
@@ -375,10 +411,17 @@ async def submit_review_request(ctx: Context, owner: str, repo: str, head_branch
     """
     Step 7: Opens a Pull Request for the documentation.
     API Call: POST /pulls
+
+    IMPORTANT: When the user asks to document a file of source code within
+    a project or github repository, get_repository_map represents the first 
+    tool in the cronilogical order of operations. To provide the best results
+    and get the most context about the source code for documentation, follow 
+    tools that have steps 1-7 to fully complete the task.
     """
     token = validate_header_token(ctx)
     payload = {"title": title, "body": body, "head": head_branch, "base": base_branch}
     
+    # Submits the request to review
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"https://api.github.com/repos/{owner}/{repo}/pulls",
