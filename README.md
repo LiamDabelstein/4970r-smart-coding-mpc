@@ -1,4 +1,4 @@
-# 4970r-smart-coding-mpc-repo
+# 4970r-smart-coding-mpc Repository 
 
 This project implements a Model Context Protocol (MCP) server that acts as a bridge between Large Language Models (LLMs) and GitHub. It provides a structured, safe, and context-aware workflow for AI agents to analyze codebases and submit contributions.
 
