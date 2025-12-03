@@ -154,12 +154,12 @@ async def verify_login(device_code: str) -> str:
                     f"SUCCESS! Token: {token}\n\n"
                     "CONFIGURATION STEP:\n"
                     "1. Copy this token.\n"
-                    "2. Open your Claude Desktop config file.\n"
+                    "2. Open your MCP Client config file.\n"
                     "3. Add the token to the 'env' section for 'smart-coding':\n"
                     f'   "env": {{\n'
                     f'     "GITHUB_PERSONAL_ACCESS_TOKEN": "{token}"\n'
                     f'   }}\n'
-                    "4. Restart Claude."
+                    "4. Restart Client."
                 )
             
             # Handle explicit expiration error
@@ -295,11 +295,12 @@ async def get_repository_map(ctx: Context, owner: str, repo: str, branch: str = 
     Step 1: Retrieves the entire file structure of the repository.
     API Call: GET /git/trees/{branch}?recursive=1
 
-    IMPORTANT: When the user asks to document a file of source code within
+    IMPORTANT: When the user asks to change a file of source code within
     a project or github repository, get_repository_map represents the first 
-    tool in the cronilogical order of operations. To provide the best results
-    and get the most context about the source code for documentation, follow 
-    tools that have steps 1-7 to fully complete the task.
+    tool in the cronilogical order of operations. You are required to call 
+    all seven tools that have steps 1-7 to fully complete the task. See
+    all tool docstrings for the step order. After completing these steps
+    once, you can call tools as needed for adjustments to the file.
     """
     token = validate_header_token(ctx)
     async with httpx.AsyncClient() as client:
@@ -330,11 +331,12 @@ async def get_project_overview(ctx: Context, owner: str, repo: str) -> str:
     Step 2: Synthesizes the tech stack, languages, and README.
     API Calls: GET /languages, GET /dependency-graph/sbom, GET /readme
 
-    IMPORTANT: When the user asks to document a file of source code within
+    IMPORTANT: When the user asks to change a file of source code within
     a project or github repository, get_repository_map represents the first 
-    tool in the cronilogical order of operations. To provide the best results
-    and get the most context about the source code for documentation, follow 
-    tools that have steps 1-7 to fully complete the task.
+    tool in the cronilogical order of operations. You are required to call 
+    all seven tools that have steps 1-7 to fully complete the task. See
+    all tool docstrings for the step order. After completing these steps
+    once, you can call tools as needed for adjustments to the file.
     """
     token = validate_header_token(ctx)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
@@ -391,11 +393,12 @@ async def inspect_target_file(ctx: Context, owner: str, repo: str, path: str) ->
     Step 3: Deep analysis of the file you want to document.
     API Calls: GET /contents, GET /commits, GET /commits/{sha}/pulls
 
-    IMPORTANT: When the user asks to document a file of source code within
+    IMPORTANT: When the user asks to change a file of source code within
     a project or github repository, get_repository_map represents the first 
-    tool in the cronilogical order of operations. To provide the best results
-    and get the most context about the source code for documentation, follow 
-    tools that have steps 1-7 to fully complete the task.
+    tool in the cronilogical order of operations. You are required to call 
+    all seven tools that have steps 1-7 to fully complete the task. See
+    all tool docstrings for the step order. After completing these steps
+    once, you can call tools as needed for adjustments to the file.
     """
     token = validate_header_token(ctx)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
@@ -450,11 +453,12 @@ async def read_references(ctx: Context, owner: str, repo: str, paths: list[str])
     Step 4: Reads dependencies/imports found in the target file.
     API Calls: Multiple GET /contents calls in parallel.
 
-    IMPORTANT: When the user asks to document a file of source code within
+    IMPORTANT: When the user asks to change a file of source code within
     a project or github repository, get_repository_map represents the first 
-    tool in the cronilogical order of operations. To provide the best results
-    and get the most context about the source code for documentation, follow 
-    tools that have steps 1-7 to fully complete the task.
+    tool in the cronilogical order of operations. You are required to call 
+    all seven tools that have steps 1-7 to fully complete the task. See
+    all tool docstrings for the step order. After completing these steps
+    once, you can call tools as needed for adjustments to the file.
     """
     token = validate_header_token(ctx)
     
@@ -492,11 +496,12 @@ async def initialize_workspace(ctx: Context, owner: str, repo: str, base_branch:
     Step 5: Creates a new branch for the documentation work.
     API Calls: GET /git/ref/heads/{base}, POST /git/refs
 
-    IMPORTANT: When the user asks to document a file of source code within
+    IMPORTANT: When the user asks to change a file of source code within
     a project or github repository, get_repository_map represents the first 
-    tool in the cronilogical order of operations. To provide the best results
-    and get the most context about the source code for documentation, follow 
-    tools that have steps 1-7 to fully complete the task.
+    tool in the cronilogical order of operations. You are required to call 
+    all seven tools that have steps 1-7 to fully complete the task. See
+    all tool docstrings for the step order. After completing these steps
+    once, you can call tools as needed for adjustments to the file.
     """
     token = validate_header_token(ctx)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
@@ -531,14 +536,17 @@ async def initialize_workspace(ctx: Context, owner: str, repo: str, base_branch:
 @mcp.tool()
 async def commit_file_update(ctx: Context, owner: str, repo: str, branch: str, path: str, new_content: str, original_sha: str, message: str) -> str:
     """
-    Step 6: Writes the documented code to the file.
+    Step 6: Writes the documented code to the file. 
+    EXTRA IMPORTANT: You are required to only commit files to the new branch 
+    you made from the previous tool/step called initialize_workspace.
     API Call: PUT /contents/{path}
 
-    IMPORTANT: When the user asks to document a file of source code within
+    IMPORTANT: When the user asks to change a file of source code within
     a project or github repository, get_repository_map represents the first 
-    tool in the cronilogical order of operations. To provide the best results
-    and get the most context about the source code for documentation, follow 
-    tools that have steps 1-7 to fully complete the task.
+    tool in the cronilogical order of operations. You are required to call 
+    all seven tools that have steps 1-7 to fully complete the task. See
+    all tool docstrings for the step order. After completing these steps
+    once, you can call tools as needed for adjustments to the file.
     """
     token = validate_header_token(ctx)
     # GitHub API requires content to be Base64 encoded
@@ -570,11 +578,12 @@ async def submit_review_request(ctx: Context, owner: str, repo: str, head_branch
     Step 7: Opens a Pull Request for the documentation.
     API Call: POST /pulls
 
-    IMPORTANT: When the user asks to document a file of source code within
+    IMPORTANT: When the user asks to change a file of source code within
     a project or github repository, get_repository_map represents the first 
-    tool in the cronilogical order of operations. To provide the best results
-    and get the most context about the source code for documentation, follow 
-    tools that have steps 1-7 to fully complete the task.
+    tool in the cronilogical order of operations. You are required to call 
+    all seven tools that have steps 1-7 to fully complete the task. See
+    all tool docstrings for the step order. After completing these steps
+    once, you can call tools as needed for adjustments to the file.
     """
     token = validate_header_token(ctx)
     payload = {"title": title, "body": body, "head": head_branch, "base": base_branch}
