@@ -21,5 +21,4 @@ While capable of general code editing, this server is optimized for automated do
 
 # 4970r-smart-coding-mpc GitHub App
 
-The GitHub application found at https://github.com/apps/4970r-smart-coding-mpc
-is needed to utilize the 4970r-smart-coding remote mcp server.
+The GitHub application found at https://github.com/apps/4970r-smart-coding-mpc is needed to utilize the 4970r-smart-coding remote mcp server.
