@@ -40,10 +40,43 @@ def validate_header_token(ctx: Context) -> str:
         
     except Exception:
         raise ToolError(
-            "🔒 Authentication Failed.\n"
+            "Authentication Failed.\n"
             "The tool attempted to access GitHub but no valid token was found header.\n"
             "Please RUN the 'initiate_login' tool now to fix this."
         )
+
+# --- Helper: Centralized Error Parsing ---
+def parse_github_error(resp: httpx.Response) -> str:
+    """
+    Translates HTTP status codes into actionable error messages for the LLM.
+    """
+    if resp.status_code == 401:
+        return "401 Unauthorized: Your token is invalid, expired, or revoked."
+        
+    if resp.status_code == 403:
+        # Common cause: The App is installed on the User's account, but NOT 
+        # on the Organization that owns the repo.
+        return (
+            "403 Forbidden: Access denied. Possibilities:\n"
+            "1. The App is not installed on this specific repository/organization.\n"
+            "2. Organization SAML/SSO enforcement is blocking access.\n"
+            "3. API Rate limit exceeded."
+        )
+        
+    if resp.status_code == 404:
+        # GitHub returns 404 for Private repos if you lack permissions
+        return (
+            "404 Not Found: The repository does not exist OR the App lacks permission to see it.\n"
+            "(GitHub hides private repos as 404s to prevent leaking their existence)."
+        )
+        
+    if resp.status_code == 409:
+        return "409 Conflict: The file has changed since you last read it (Git Conflict)."
+        
+    if resp.status_code == 422:
+        return "422 Unprocessable Entity: Validation failed (e.g., Pull Request already exists)."
+
+    return f"GitHub API Error {resp.status_code}: {resp.text}"
 
 # ==============================================================================
 # AUTHENTICATION TOOLS
@@ -118,8 +151,8 @@ async def verify_login(device_code: str) -> str:
             if "access_token" in poll_data:
                 token = poll_data["access_token"]  
                 return (
-                    f"✅ SUCCESS! Token: {token}\n\n"
-                    "👉 CONFIGURATION STEP:\n"
+                    f"SUCCESS! Token: {token}\n\n"
+                    "CONFIGURATION STEP:\n"
                     "1. Copy this token.\n"
                     "2. Open your Claude Desktop config file.\n"
                     "3. Add the token to the 'env' section for 'smart-coding':\n"
@@ -131,25 +164,26 @@ async def verify_login(device_code: str) -> str:
             
             # Handle explicit expiration error
             if poll_data.get("error") == "expired_token":
-                return "❌ The login code expired. Please start over with 'initiate_login'."
+                return "The login code expired. Please start over with 'initiate_login'."
             
             await asyncio.sleep(5)  # Wait 5 seconds before next poll
             
-    return "❌ Timeout: User did not authorize in time. Please try again."
+    return "Timeout: User did not authorize in time. Please try again."
 
 # ==============================================================================
 # PHASE 0: DISCOVERY
-# Use this tool to find out WHO the user is and WHAT repos they have.
+# Use these tools to find out WHO the user is and search for repos.
 # ==============================================================================
 
 @mcp.tool()
 async def get_user_context(ctx: Context) -> str:
     """
-    Step 0: Discovery. Identifies the connected user and lists available repositories.
+    Step 0 (Part A): Identifies the connected user and lists the 10 most recently updated repos.
     API Calls: GET /user, GET /user/repos
 
     IMPORTANT: Use this tool FIRST to help the user select which repository
-    they want to work on if it is not explicitly stated.
+    they want to work on. If the desired repository is NOT in this list,
+    proceed to use 'search_repositories'.
     """
     token = validate_header_token(ctx)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
@@ -163,27 +197,66 @@ async def get_user_context(ctx: Context) -> str:
         
         user_resp, repos_resp = await asyncio.gather(*tasks)
 
-        # 1. Process User Identity
+        # 1. Process User Identity (Strict Error Checking)
         if user_resp.status_code != 200:
-             return f"❌ Error fetching user profile: {user_resp.status_code}"
+             return f"User Check Failed: {parse_github_error(user_resp)}"
+             
         user_data = user_resp.json()
-        user_info = f"👤 User: {user_data.get('login')} ({user_data.get('name', 'No Name')})"
+        user_info = f"User: {user_data.get('login')} ({user_data.get('name', 'No Name')})"
 
         # 2. Process Repositories
         repo_list = []
         if repos_resp.status_code == 200:
             repos = repos_resp.json()
             for r in repos:
-                private_icon = "🔒" if r.get("private") else "🌍"
+                private_icon = "[Private]" if r.get("private") else "[Public]"
                 repo_list.append(f"- {private_icon} {r.get('full_name')}: {r.get('description', 'No description')}")
         else:
-            repo_list.append("❌ Error fetching repositories.")
+            # Explicitly capture why listing repos failed
+            repo_list.append(f"Error fetching repositories: {parse_github_error(repos_resp)}")
 
         return (
             f"{user_info}\n"
             f"===================================\n"
-            f"📂 Top 10 Recent Repositories:\n" + "\n".join(repo_list)
+            f"Top 10 Recent Repositories:\n" + "\n".join(repo_list)
         )
+
+@mcp.tool()
+async def search_repositories(ctx: Context, query: str) -> str:
+    """
+    Step 0 (Part B): Searches for repositories accessible to the user.
+    API Call: GET /search/repositories
+    
+    IMPORTANT: Use this tool if the repository the user wants to work on is 
+    NOT listed in the 'get_user_context' results. This allows you to find 
+    older or less frequently used repositories.
+    """
+    token = validate_header_token(ctx)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
+
+    async with httpx.AsyncClient() as client:
+        # Search for repos matching the query that the user has access to
+        # 'user:@me' limits search to the authenticated user's scope
+        search_url = f"https://api.github.com/search/repositories?q={query}+user:@me&per_page=5"
+        
+        resp = await client.get(search_url, headers=headers)
+        
+        if resp.status_code != 200:
+            return f"Search failed: {parse_github_error(resp)}"
+            
+        data = resp.json()
+        items = data.get("items", [])
+        
+        if not items:
+            return f"No repositories found matching '{query}'."
+            
+        results = []
+        for repo in items:
+            private_status = "[Private]" if repo.get("private") else "[Public]"
+            # Include the updated date so the user knows if it's an old project
+            results.append(f"- {private_status} {repo['full_name']} (Updated: {repo['updated_at'][:10]})")
+            
+        return f"Search Results for '{query}':\n" + "\n".join(results)
 
 # ==============================================================================
 # PHASE 1: ORIENTATION (The Map)
@@ -211,18 +284,19 @@ async def get_repository_map(ctx: Context, owner: str, repo: str, branch: str = 
             headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
         )
         
+        # Explicit error handling for missing/unauthorized repos
         if resp.status_code != 200:
-            return f"❌ Error fetching structure: {resp.status_code}"
+            return parse_github_error(resp)
 
         data = resp.json()
         if data.get("truncated"):
-            return "⚠️ Warning: Repo is too large. Showing partial structure."
+            return "Warning: Repo is too large. Showing partial structure."
         
         # Filter to only show files (blobs), ignore folders to save tokens
         files = [item["path"] for item in data.get("tree", []) if item["type"] == "blob"]
         
         # Return top 200 files to prevent context overflow in the LLM
-        return f"🗺️ Repository Map for {owner}/{repo}:\n\n" + "\n".join(files[:200])
+        return f"Repository Map for {owner}/{repo}:\n\n" + "\n".join(files[:200])
 
 @mcp.tool()
 async def get_project_overview(ctx: Context, owner: str, repo: str) -> str:
@@ -250,7 +324,7 @@ async def get_project_overview(ctx: Context, owner: str, repo: str) -> str:
         # Wait for all requests to complete
         langs_resp, sbom_resp, readme_resp = await asyncio.gather(*tasks)
         
-        # 1. Process Languages (Keys are language names, values are byte counts)
+        # 1. Process Languages
         languages = list(langs_resp.json().keys()) if langs_resp.status_code == 200 else ["Unknown"]
         
         # 2. Process SBOM (Software Bill of Materials / Libraries)
@@ -262,7 +336,7 @@ async def get_project_overview(ctx: Context, owner: str, repo: str) -> str:
         else:
             stack = ["(Dependency Graph disabled for this repo)"]
 
-        # 3. Process README (Snippet) - Requires Base64 decoding
+        # 3. Process README
         readme_snippet = "No README found."
         if readme_resp.status_code == 200:
             try:
@@ -270,13 +344,14 @@ async def get_project_overview(ctx: Context, owner: str, repo: str) -> str:
                 readme_snippet = content[:500] + "..." # Truncate to first 500 chars
             except:
                 readme_snippet = "Error decoding README."
+        # If the README is missing (404), it's not a critical error, so we don't return parse_github_error here.
 
         return (
-            f"🚀 PROJECT OVERVIEW: {owner}/{repo}\n"
+            f"PROJECT OVERVIEW: {owner}/{repo}\n"
             f"===================================\n"
-            f"🗣️ Languages: {', '.join(languages)}\n"
-            f"📚 Tech Stack: {', '.join(stack[:10])}\n"
-            f"📝 README Preview:\n{readme_snippet}"
+            f"Languages: {', '.join(languages)}\n"
+            f"Tech Stack: {', '.join(stack[:10])}\n"
+            f"README Preview:\n{readme_snippet}"
         )
 
 # ==============================================================================
@@ -302,14 +377,16 @@ async def inspect_target_file(ctx: Context, owner: str, repo: str, path: str) ->
     async with httpx.AsyncClient() as client:
         # A. Get Content
         content_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/contents/{path}", headers=headers)
+        
+        # Explicitly catch file not found or permission errors
         if content_resp.status_code != 200:
-            return f"❌ File not found: {path}"
+            return parse_github_error(content_resp)
         
         file_data = content_resp.json()
         content = base64.b64decode(file_data["content"]).decode("utf-8")
         current_sha = file_data["sha"] # SHA needed later for updates
 
-        # B. Get Commit History (Last 3) to understand recent changes
+        # B. Get Commit History (Last 3)
         history_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/commits?path={path}&per_page=3", headers=headers)
         commits = history_resp.json() if history_resp.status_code == 200 else []
         
@@ -332,11 +409,11 @@ async def inspect_target_file(ctx: Context, owner: str, repo: str, path: str) ->
                 pr_context = f"PR #{pr['number']} - {pr['title']}\n{pr['body'][:200]}..."
 
         return (
-            f"🧐 DEEP INSPECTION: {path}\n"
-            f"🔑 File SHA: {current_sha} (Required for updates)\n"
+            f"DEEP INSPECTION: {path}\n"
+            f"File SHA: {current_sha} (Required for updates)\n"
             f"===================================\n"
-            f"📜 Recent History:\n{history_text}\n"
-            f"💡 Business Intent (PR):\n{pr_context}\n"
+            f"Recent History:\n{history_text}\n"
+            f"Business Intent (PR):\n{pr_context}\n"
             f"===================================\n"
             f"{content}"
         )
@@ -367,7 +444,9 @@ async def read_references(ctx: Context, owner: str, repo: str, paths: list[str])
                 return f"--- REFERENCE: {path} ---\n{content}\n"
             except:
                 return f"--- ERROR: Could not decode {path} ---\n"
-        return f"--- ERROR: Could not find {path} ---\n"
+        
+        # Return strict error if failed, so LLM knows why import is missing
+        return f"--- ERROR: {path} ({parse_github_error(resp)}) ---\n"
 
     async with httpx.AsyncClient() as client:
         # Create tasks for every path requested
@@ -403,8 +482,10 @@ async def initialize_workspace(ctx: Context, owner: str, repo: str, base_branch:
     async with httpx.AsyncClient() as client:
         # 1. Get SHA of base branch to know where to start from
         ref_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{base_branch}", headers=headers)
+        
+        # Explicit error checking (e.g., if 'main' doesn't exist or access denied)
         if ref_resp.status_code != 200:
-            return f"❌ Base branch '{base_branch}' not found."
+            return f"Failed to find base branch '{base_branch}': {parse_github_error(ref_resp)}"
         
         base_sha = ref_resp.json()["object"]["sha"]
         
@@ -416,8 +497,10 @@ async def initialize_workspace(ctx: Context, owner: str, repo: str, base_branch:
         )
         
         if create_resp.status_code == 201:
-            return f"✅ Workspace initialized. Created branch: '{new_branch}'"
-        return f"❌ Error creating branch: {create_resp.text}"
+            return f"Workspace initialized. Created branch: '{new_branch}'"
+        
+        # If branch creation fails (e.g., already exists or protected), explain why
+        return f"Error creating branch: {parse_github_error(create_resp)}"
 
 @mcp.tool()
 async def commit_file_update(ctx: Context, owner: str, repo: str, branch: str, path: str, new_content: str, original_sha: str, message: str) -> str:
@@ -450,8 +533,10 @@ async def commit_file_update(ctx: Context, owner: str, repo: str, branch: str, p
         )
         
         if resp.status_code in [200, 201]:
-            return f"✅ File '{path}' successfully updated on branch '{branch}'."
-        return f"❌ Update failed: {resp.text}"
+            return f"File '{path}' successfully updated on branch '{branch}'."
+        
+        # Capture conflicts (409) or permission errors (403)
+        return f"Update failed: {parse_github_error(resp)}"
 
 @mcp.tool()
 async def submit_review_request(ctx: Context, owner: str, repo: str, head_branch: str, title: str, body: str, base_branch: str = "main") -> str:
@@ -476,8 +561,10 @@ async def submit_review_request(ctx: Context, owner: str, repo: str, head_branch
         )
         
         if resp.status_code == 201:
-            return f"🎉 Success! PR Created: {resp.json()['html_url']}"
-        return f"❌ PR Creation failed: {resp.text}"
+            return f"Success! PR Created: {resp.json()['html_url']}"
+        
+        # Capture if PR already exists (422) or access denied
+        return f"PR Creation failed: {parse_github_error(resp)}"
 
 # --- Start the MCP server ---
 if __name__ == "__main__":
