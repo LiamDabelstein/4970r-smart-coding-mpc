@@ -23,23 +23,3 @@ While capable of general code editing, this server is optimized for automated do
 
 The GitHub application found at https://github.com/apps/4970r-smart-coding-mpc
 is needed to utilize the 4970r-smart-coding remote mcp server.
-
-To install the mcp server and acquire your user access token:
-1) Install the smart-coding remote mpc server in the client mcp configuration file, seen below.
-2) Open up the mcp client and ask your LLM to log into GitHub.
-3) Follow the guided steps to revive the user access token.
-4) Re-update the mcp configuration file with the user access token.
-5) You can now use the remote mcp server functionality as normal.
-
-"smart-coding": {
-    "command": "npx",
-    "args": [
-        "-y",
-        "mcp-remote",
-        "https://4970r-smart-coding.fastmcp.app/mcp",
-        "--header",
-        "User-Access-Token:${GITHUB_PERSONAL_ACCESS_TOKEN}"
-    ],
-    "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghu_YOUR_TOKEN_HERE"
-}
