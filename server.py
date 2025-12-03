@@ -539,10 +539,10 @@ async def commit_file_update(ctx: Context, owner: str, repo: str, branch: str, p
     Step 6: Writes the documented code to the file. 
     API Call: PUT /contents/{path}
 
-    IMPORTANT TOOL INFORMATION: Present the code changes to the user and clarify 
-    any source code edits before calling this tool. Additionally, You 
-    are only permitted to commit files to the new branch you made from 
-    the previous tool called initialize_workspace.
+    IMPORTANT TOOL INFORMATION: Present the any code changes to the user
+    before calling this tool. Additionally, You  are only permitted to 
+    commit files to the new branch you made from the previous tool called 
+    initialize_workspace.
     
     IMPORTANT: When the user asks to change a file of source code within
     a project or github repository, get_repository_map represents the first 
