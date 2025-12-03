@@ -138,6 +138,54 @@ async def verify_login(device_code: str) -> str:
     return "❌ Timeout: User did not authorize in time. Please try again."
 
 # ==============================================================================
+# PHASE 0: DISCOVERY
+# Use this tool to find out WHO the user is and WHAT repos they have.
+# ==============================================================================
+
+@mcp.tool()
+async def get_user_context(ctx: Context) -> str:
+    """
+    Step 0: Discovery. Identifies the connected user and lists available repositories.
+    API Calls: GET /user, GET /user/repos
+
+    IMPORTANT: Use this tool FIRST to help the user select which repository
+    they want to work on if it is not explicitly stated.
+    """
+    token = validate_header_token(ctx)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
+
+    async with httpx.AsyncClient() as client:
+        # Parallel fetch: User identity and Repos (Top 10 recently updated)
+        tasks = [
+            client.get("https://api.github.com/user", headers=headers),
+            client.get("https://api.github.com/user/repos?sort=updated&per_page=10&type=owner", headers=headers)
+        ]
+        
+        user_resp, repos_resp = await asyncio.gather(*tasks)
+
+        # 1. Process User Identity
+        if user_resp.status_code != 200:
+             return f"❌ Error fetching user profile: {user_resp.status_code}"
+        user_data = user_resp.json()
+        user_info = f"👤 User: {user_data.get('login')} ({user_data.get('name', 'No Name')})"
+
+        # 2. Process Repositories
+        repo_list = []
+        if repos_resp.status_code == 200:
+            repos = repos_resp.json()
+            for r in repos:
+                private_icon = "🔒" if r.get("private") else "🌍"
+                repo_list.append(f"- {private_icon} {r.get('full_name')}: {r.get('description', 'No description')}")
+        else:
+            repo_list.append("❌ Error fetching repositories.")
+
+        return (
+            f"{user_info}\n"
+            f"===================================\n"
+            f"📂 Top 10 Recent Repositories:\n" + "\n".join(repo_list)
+        )
+
+# ==============================================================================
 # PHASE 1: ORIENTATION (The Map)
 # Use these tools FIRST to understand the project before reading code.
 # ==============================================================================
@@ -202,10 +250,10 @@ async def get_project_overview(ctx: Context, owner: str, repo: str) -> str:
         # Wait for all requests to complete
         langs_resp, sbom_resp, readme_resp = await asyncio.gather(*tasks)
         
-        # Process Languages (Keys are language names, values are byte counts)
+        # 1. Process Languages (Keys are language names, values are byte counts)
         languages = list(langs_resp.json().keys()) if langs_resp.status_code == 200 else ["Unknown"]
         
-        # Process SBOM (Software Bill of Materials / Libraries)
+        # 2. Process SBOM (Software Bill of Materials / Libraries)
         stack = []
         if sbom_resp.status_code == 200:
             data = sbom_resp.json()
@@ -214,7 +262,7 @@ async def get_project_overview(ctx: Context, owner: str, repo: str) -> str:
         else:
             stack = ["(Dependency Graph disabled for this repo)"]
 
-        # Process README (Snippet) - Requires Base64 decoding
+        # 3. Process README (Snippet) - Requires Base64 decoding
         readme_snippet = "No README found."
         if readme_resp.status_code == 200:
             try:
@@ -252,7 +300,7 @@ async def inspect_target_file(ctx: Context, owner: str, repo: str, path: str) ->
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
     
     async with httpx.AsyncClient() as client:
-        # Get Content
+        # A. Get Content
         content_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/contents/{path}", headers=headers)
         if content_resp.status_code != 200:
             return f"❌ File not found: {path}"
@@ -261,7 +309,7 @@ async def inspect_target_file(ctx: Context, owner: str, repo: str, path: str) ->
         content = base64.b64decode(file_data["content"]).decode("utf-8")
         current_sha = file_data["sha"] # SHA needed later for updates
 
-        # Get Commit History (Last 3) to understand recent changes
+        # B. Get Commit History (Last 3) to understand recent changes
         history_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/commits?path={path}&per_page=3", headers=headers)
         commits = history_resp.json() if history_resp.status_code == 200 else []
         
@@ -274,7 +322,7 @@ async def inspect_target_file(ctx: Context, owner: str, repo: str, path: str) ->
             author = c["commit"]["author"]["name"]
             history_text += f"- {author}: {msg}\n"
 
-        # Get Intent (PR) associated with the LATEST change
+        # C. Get Intent (PR) associated with the LATEST change
         pr_context = "No associated PR found."
         if latest_commit_sha:
             # Special endpoint to link commit -> PR to understand business logic
@@ -353,14 +401,14 @@ async def initialize_workspace(ctx: Context, owner: str, repo: str, base_branch:
     new_branch = f"docs/update-{int(time.time())}"
     
     async with httpx.AsyncClient() as client:
-        # Get SHA of base branch to know where to start from
+        # 1. Get SHA of base branch to know where to start from
         ref_resp = await client.get(f"https://api.github.com/repos/{owner}/{repo}/git/ref/heads/{base_branch}", headers=headers)
         if ref_resp.status_code != 200:
             return f"❌ Base branch '{base_branch}' not found."
         
         base_sha = ref_resp.json()["object"]["sha"]
         
-        # Create new branch pointing to that SHA
+        # 2. Create new branch pointing to that SHA
         create_resp = await client.post(
             f"https://api.github.com/repos/{owner}/{repo}/git/refs",
             json={"ref": f"refs/heads/{new_branch}", "sha": base_sha},
@@ -394,7 +442,6 @@ async def commit_file_update(ctx: Context, owner: str, repo: str, branch: str, p
         "sha": original_sha  # Critical for concurrency safety (rejects if file changed elsewhere)
     }
     
-    # Submits the commit on the branch
     async with httpx.AsyncClient() as client:
         resp = await client.put(
             f"https://api.github.com/repos/{owner}/{repo}/contents/{path}",
@@ -421,7 +468,6 @@ async def submit_review_request(ctx: Context, owner: str, repo: str, head_branch
     token = validate_header_token(ctx)
     payload = {"title": title, "body": body, "head": head_branch, "base": base_branch}
     
-    # Submits the request to review
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"https://api.github.com/repos/{owner}/{repo}/pulls",
