@@ -176,49 +176,58 @@ async def verify_login(device_code: str) -> str:
 # ==============================================================================
 
 @mcp.tool()
-async def get_user_context(ctx: Context) -> str:
+async def list_recent_repos(ctx: Context) -> str:
     """
-    Step 0 (Part A): Identifies the connected user and lists the 10 most recently updated repos.
-    API Calls: GET /user, GET /user/repos
+    Step 0 (Part A): Lists the 10 most recently updated repositories and your permissions.
+    API Calls: GET /user/repos
 
     IMPORTANT: Use this tool FIRST to help the user select which repository
-    they want to work on. If the desired repository is NOT in this list,
-    proceed to use 'search_repositories'.
+    they want to work on. It shows whether you have Admin, Write, or Read access.
+    If the desired repository is NOT in this list, use 'search_repositories'.
     """
     token = validate_header_token(ctx)
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
 
     async with httpx.AsyncClient() as client:
-        # Parallel fetch: User identity and Repos (Top 10 recently updated)
-        tasks = [
-            client.get("https://api.github.com/user", headers=headers),
-            client.get("https://api.github.com/user/repos?sort=updated&per_page=10&type=owner", headers=headers)
-        ]
-        
-        user_resp, repos_resp = await asyncio.gather(*tasks)
+        # Fetch Repos (Top 10 recently updated, including Orgs)
+        repos_resp = await client.get(
+            "https://api.github.com/user/repos?sort=updated&per_page=10&type=all", 
+            headers=headers
+        )
 
-        # 1. Process User Identity (Strict Error Checking)
-        if user_resp.status_code != 200:
-             return f"User Check Failed: {parse_github_error(user_resp)}"
-             
-        user_data = user_resp.json()
-        user_info = f"User: {user_data.get('login')} ({user_data.get('name', 'No Name')})"
-
-        # 2. Process Repositories
         repo_list = []
         if repos_resp.status_code == 200:
             repos = repos_resp.json()
             for r in repos:
-                private_icon = "[Private]" if r.get("private") else "[Public]"
-                repo_list.append(f"- {private_icon} {r.get('full_name')}: {r.get('description', 'No description')}")
+                # 1. Determine Scope
+                private_status = "[Private]" if r.get("private") else "[Public]"
+                
+                # 2. Determine Permissions
+                perms = r.get("permissions", {})
+                if perms.get("admin"):
+                    access_level = "Admin"
+                elif perms.get("maintain"):
+                    access_level = "Maintain"
+                elif perms.get("push"):
+                    access_level = "Write"
+                elif perms.get("pull"):
+                    access_level = "Read-Only"
+                else:
+                    access_level = "No-Access"
+
+                # 3. Format Output
+                repo_list.append(
+                    f"- {private_status} {r.get('full_name')} "
+                    f"(Access: {access_level}): {r.get('description', 'No description')}"
+                )
         else:
             # Explicitly capture why listing repos failed
-            repo_list.append(f"Error fetching repositories: {parse_github_error(repos_resp)}")
+            return f"Error fetching repositories: {parse_github_error(repos_resp)}"
 
         return (
-            f"{user_info}\n"
-            f"===================================\n"
-            f"Top 10 Recent Repositories:\n" + "\n".join(repo_list)
+            f"Top 10 Recent Repositories:\n"
+            f"===================================\n" + 
+            "\n".join(repo_list)
         )
 
 @mcp.tool()
@@ -228,7 +237,7 @@ async def search_repositories(ctx: Context, query: str) -> str:
     API Call: GET /search/repositories
     
     IMPORTANT: Use this tool if the repository the user wants to work on is 
-    NOT listed in the 'get_user_context' results. This allows you to find 
+    NOT listed in the 'list_recent_repos' results. This allows you to find 
     older or less frequently used repositories.
     """
     token = validate_header_token(ctx)
@@ -253,8 +262,25 @@ async def search_repositories(ctx: Context, query: str) -> str:
         results = []
         for repo in items:
             private_status = "[Private]" if repo.get("private") else "[Public]"
+            
+            # Determine Permissions (Same logic as list_recent_repos)
+            perms = repo.get("permissions", {})
+            if perms.get("admin"):
+                access_level = "Admin"
+            elif perms.get("maintain"):
+                access_level = "Maintain"
+            elif perms.get("push"):
+                access_level = "Write"
+            elif perms.get("pull"):
+                access_level = "Read-Only"
+            else:
+                access_level = "No-Access"
+
             # Include the updated date so the user knows if it's an old project
-            results.append(f"- {private_status} {repo['full_name']} (Updated: {repo['updated_at'][:10]})")
+            results.append(
+                f"- {private_status} {repo['full_name']} "
+                f"(Access: {access_level}) - Updated: {repo['updated_at'][:10]}"
+            )
             
         return f"Search Results for '{query}':\n" + "\n".join(results)
 
