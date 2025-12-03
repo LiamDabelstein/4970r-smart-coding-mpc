@@ -32,14 +32,14 @@ To install the mcp server and acquire your user access token:
 5) You can now use the remote mcp server functionality as normal.
 
 "smart-coding": {
-  "command": "npx",
-  "args": [
-    "-y",
-    "mcp-remote",
-    "https://4970r-smart-coding.fastmcp.app/mcp",
-    "--header",
-    "User-Access-Token:${GITHUB_PERSONAL_ACCESS_TOKEN}"
-  ],
-  "env": {
-    "GITHUB_PERSONAL_ACCESS_TOKEN": "ghu_YOUR_TOKEN_HERE"
-  }
+    "command": "npx",
+    "args": [
+        "-y",
+        "mcp-remote",
+        "https://4970r-smart-coding.fastmcp.app/mcp",
+        "--header",
+        "User-Access-Token:${GITHUB_PERSONAL_ACCESS_TOKEN}"
+    ],
+    "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghu_YOUR_TOKEN_HERE"
+}
